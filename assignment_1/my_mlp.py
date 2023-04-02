@@ -1,15 +1,31 @@
 import torch
-import math
 import networkx as nx # to plot networks
+import matplotlib
 import matplotlib.pyplot as plt
 from torch.utils.data import Dataset, DataLoader
 import torch.distributions.uniform as urand
-from torch import nn
 import numpy as np
 import imageio
 
-
+plt.ion()
 class Node:
+	"""
+		Classe nó para acomodar as opertações do grafo computacional
+		
+		Atributos:
+			parents: pais do nó, cada pai cria um aresta direcional até o nó
+			value: valor parcial da função no nó
+			grad: gradiente da função em relação ao nó
+			visited: flag para operações de travessia com DFS]
+			is_updatable: flag para considerar o nó atualizável (wight ou bias)
+			label: legenda para o plot do grafo
+			color: cor do nó no plot
+		Métodos:
+			add_edge: Adiciona uma aresta direcional no grafo partindo do parent
+			eval: Avalia a função no nó
+			update_derivatives: atualiza as derivadas de todos os nós pais. Lembrando que pela regra da cadeia
+			a derivada do nó pai vai ser a derivada local multiplicada pelo gradiente acumulado até o nó filho
+	"""
 	def __init__(self, parents=[], value = None, is_updatable = False, label = None, color = '#5d9b9b'):
 		self.parents = parents #node parents
 		self.value = value #save function evaluates through the graph
@@ -18,25 +34,31 @@ class Node:
 		self.is_updatable = is_updatable #for update the parameters
 		self.label = label # label for graph plot
 		self.color = color # color for graph plot
-	def add_edge(self, node):
-		self.parents.append(node)
+	def add_edge(self, parent):
+		self.parents.append(parent)
 	def eval(self):
 		raise NotImplementedError
 	def update_derivatives(self):
 		raise NotImplementedError
+
 class Const(Node):
+	"""
+		Esse nó acomoda os tipos constante: input, output, wights e bias
+	"""
 	def __init__(self, parents = [], value = None, is_updatable = False, label = None, color = '#5d9b9b'):
 		Node.__init__(self, parents, value, is_updatable, label, color)
 	def eval(self):
 		pass
 	def update_derivatives(self):
 		pass
+
 class Linear(Node):
+	"""
+		Nó responsável por efetuar a operação W*X + b, onde W são os pesos e b o bias
+	"""
 	def __init__(self, in_features, out_features):        
-		k = 1/math.sqrt(in_features)       
-		torch.manual_seed(1)
+		k = 1/np.sqrt(in_features)       
 		weights = torch.FloatTensor(out_features, in_features).uniform_(-k, k)
-		torch.manual_seed(1)
 		bias = torch.FloatTensor(out_features).uniform_(-k,k)
 		w = Const(value = weights, is_updatable = True, label = "$W")
 		b = Const(value = bias,  is_updatable = True, label = "$b")
@@ -56,6 +78,9 @@ class Linear(Node):
 		self.parents[2].grad += torch.mm(grad, w) #update grad inputs
 
 class Sigmoid(Node):
+	"""
+		Esse nó	implementa a função de ativação sigmoid
+	"""
 	def __init__(self):
 		Node.__init__(self,[],label="$\sigma",color="#C48DF3")
 	def eval(self):
@@ -67,6 +92,9 @@ class Sigmoid(Node):
 		d = s * (1 - s)
 		self.parents[0].grad += d * self.grad
 class ReLU(Node):
+	"""
+		Esse nó implementa a função de ativação ReLu
+	"""
 	def __init__(self):
 		Node.__init__(self,[],label="$\sigma",color="#C48DF3")
 	def eval(self):
@@ -78,6 +106,14 @@ class ReLU(Node):
 		self.parents[0].grad += (s > 0).float() * self.grad
 
 class MSE(Node):
+	"""
+		Esse nó implementa a função de custo (Y - f(theta))^2 / n
+  
+		Métodos:
+			backward: Após ordenar pela sua ordem topológica reversa é possível obter o
+			gradiente em cada nó a partir de um único loop, uma vez que todo gradiente posterior
+   			ao nó já terá sido avaliado.
+	"""
 	def __init__(self, model):
 		Y = Const(label = "$Y$", color='#FF6961')
 		Node.__init__(self, [model, Y])
@@ -96,68 +132,17 @@ class MSE(Node):
 		self.update_derivatives()
 		for node in self.parents[0].nodes_ordered:
 			node.update_derivatives()
-	def show(self):
-		nodes = self.parents[0].nodes_ordered.copy()
-		nodes.insert(0,self)
-		nodes.insert(0,self.parents[1])
-		n_nodes = len(nodes)
-		layers = (n_nodes - 2)//4
-		adj_list = [[] for i in range(n_nodes)]
-		labels = {}
-		labels_dict = {"$L": layers,"$\sigma":layers - 1}
-		colors = []
-		for i in range(n_nodes):
-			colors.append(nodes[i].color)
-			name = nodes[i].label
-			if name in labels_dict:
-				labels_dict[name] -= 1
-				name = name + "_{" + str(labels_dict[name]) + "}" + "$"
-			if name[1] == 'L':
-				nodes[i].parents[0].label = nodes[i].parents[0].label + "_{" + name[4] + "}" + "$"
-				nodes[i].parents[1].label = nodes[i].parents[1].label + "_{" + name[4] + "}" + "$"
-			labels[i] = name
-			for parent in nodes[i].parents:
-				for j in range(n_nodes):
-					if (nodes[j] == parent):
-						break
-				adj_list[j].append(i)
-		adj_dict = {i: adj_list[i] for i in range(len(adj_list))}
-		G = nx.DiGraph(adj_dict)
-		for layer, nodes in enumerate(nx.topological_generations(G)):    
-			for node in nodes:
-				G.nodes[node]["layer"] = layer
-		pos = nx.multipartite_layout(G, subset_key="layer")
-		nx.draw(G,pos,labels=labels, node_color = colors, edge_color="tab:green", node_size=450)
-		plt.savefig('computational_graph.png', bbox_inches='tight')
-	
-class SGD:
-	def __init__(self, trainable_nodes, learning_rate = 0.001):
-		self.trainable_nodes = trainable_nodes
-		self.learning_rate = learning_rate
-	def step(self):
-		for node in self.trainable_nodes:
-			node.value += -self.learning_rate * node.grad
-class Adam:
-	def __init__(self, trainable_nodes, learning_rate = 0.001, beta_1 = 0.9, beta_2 = 0.999):
-		self.trainable_nodes = trainable_nodes
-		self.learning_rate = learning_rate
-		self.beta_1 = beta_1
-		self.beta_2 = beta_2
-		self.n = len(trainable_nodes)
-		self.s = [0] * self.n # first moment variable
-		self.r = [0] * self.n # second moment variable
-		self.epslon = 1e-6 # avoid division by zero
-	def step(self):
-		for i in range(self.n):
-			node = self.trainable_nodes[i]
-			g = node.grad
-			self.s[i] = self.beta_1 * self.s[i] + (1 - self.beta_1)*g
-			self.r[i] = self.beta_2 * self.r[i] + (1 - self.beta_2)*(g*g)
-			s_c = self.s[i] / (1 - self.beta_1)
-			r_c = self.r[i] / (1 - self.beta_2)
-			node.value += -self.learning_rate * (s_c /(torch.sqrt(r_c) + self.epslon))
 
 class GraphNetwork:
+	"""
+		Classe responsável pelo gerenciamento do grafo computacional. É nesse momento que
+		é feita a ordenação topológica reversa.
+
+		Métodos:
+			eval: Para avaliar a MLP no último nó é preciso percorrer todos os nós em ordem
+		de procedência. Isso é feito por meio da DFS, uma vez que o nó só é avaliado se todos
+		os seus pais já tiverem o feito.
+	"""
 	def __init__(self, *args):
 		n_nodes = len(args)
 		self.layers = args
@@ -206,7 +191,38 @@ class GraphNetwork:
 			for parent in node.parents:
 				self.forward(parent)
 		node.eval()
-  
+# Optimization Methods
+class SGD:
+	def __init__(self, trainable_nodes, learning_rate = 0.001):
+		self.trainable_nodes = trainable_nodes
+		self.learning_rate = learning_rate
+	def step(self):
+		for node in self.trainable_nodes:
+			node.value += -self.learning_rate * node.grad
+	def reset(self):
+		for node in self.trainable_nodes:
+			node.value.uniform_(-1,1)
+
+class Adam:
+	def __init__(self, trainable_nodes, learning_rate = 0.001, beta_1 = 0.9, beta_2 = 0.999):
+		self.trainable_nodes = trainable_nodes
+		self.learning_rate = learning_rate
+		self.beta_1 = beta_1
+		self.beta_2 = beta_2
+		self.n = len(trainable_nodes)
+		self.s = [0] * self.n # first moment variable
+		self.r = [0] * self.n # second moment variable
+		self.epslon = 1e-6 # avoid division by zero
+	def step(self):
+		for i in range(self.n):
+			node = self.trainable_nodes[i]
+			g = node.grad
+			self.s[i] = self.beta_1 * self.s[i] + (1 - self.beta_1)*g
+			self.r[i] = self.beta_2 * self.r[i] + (1 - self.beta_2)*(g*g)
+			s_c = self.s[i] / (1 - self.beta_1)
+			r_c = self.r[i] / (1 - self.beta_2)
+			node.value += -self.learning_rate * (s_c /(torch.sqrt(r_c) + self.epslon))
+
 # This is a Dataset class to work with PyTorch
 class AlgebraicDataset(Dataset):
   '''Abstraction for a dataset of a 1D function'''
@@ -221,9 +237,45 @@ class AlgebraicDataset(Dataset):
   def __getitem__(self, idx):
     return self.data[idx]
 
-def plot_comparison(f, model, interval=(-10, 10), nsamples=1000, return_array=True):
-  fig, ax = plt.subplots(figsize=(10, 10))
+#Plot functions
+def show(loss):
+	nodes = loss.parents[0].nodes_ordered.copy()
+	nodes.insert(0,loss)
+	nodes.insert(0,loss.parents[1])
+	n_nodes = len(nodes)
+	layers = (n_nodes - 2)//4
+	adj_list = [[] for i in range(n_nodes)]
+	labels = {}
+	labels_dict = {"$L": layers,"$\sigma":layers - 1}
+	colors = []
+	for i in range(n_nodes):
+		colors.append(nodes[i].color)
+		name = nodes[i].label
+		if name in labels_dict:
+			labels_dict[name] -= 1
+			name = name + "_{" + str(labels_dict[name]) + "}" + "$"
+		if name[1] == 'L':
+			nodes[i].parents[0].label = nodes[i].parents[0].label + "_{" + name[4] + "}" + "$"
+			nodes[i].parents[1].label = nodes[i].parents[1].label + "_{" + name[4] + "}" + "$"
+		labels[i] = name
+		for parent in nodes[i].parents:
+			for j in range(n_nodes):
+				if (nodes[j] == parent):
+					break
+			adj_list[j].append(i)
+	adj_dict = {i: adj_list[i] for i in range(len(adj_list))}
+	G = nx.DiGraph(adj_dict)
+	for layer, nodes in enumerate(nx.topological_generations(G)):    
+		for node in nodes:
+			G.nodes[node]["layer"] = layer
+	pos = nx.multipartite_layout(G, subset_key="layer")
+	nx.draw(G,pos,labels=labels, node_color = colors, edge_color="tab:green", node_size=450)
+	plt.savefig('computational_graph.png', bbox_inches='tight')
 
+def plot_comparison(f, model, interval=(-10, 10), nsamples=300, return_array=True, epoch = None):
+  fig, ax = plt.subplots(figsize=(10, 10))
+  if (epoch):
+      plt.title("Epoch =" + str(epoch))
   ax.grid(True, which='both')
   ax.spines['left'].set_position('zero')
   ax.spines['right'].set_color('none')
@@ -233,12 +285,9 @@ def plot_comparison(f, model, interval=(-10, 10), nsamples=1000, return_array=Tr
   samples = np.linspace(interval[0], interval[1], nsamples)
   X =  torch.tensor(samples).unsqueeze(1).float()
   pred = model.eval(X)
-#   model.eval()
-#   with torch.no_grad():
-#     pred = model(X)
 
   ax.plot(samples, list(map(f, samples)), "o", label="ground truth")
-  ax.plot(samples, pred, label="model")
+  ax.plot(samples, pred, label="model (Sigmoid)", linewidth = 4.0)
   plt.legend()
   #plt.show()
   # to return image as numpy array
@@ -246,6 +295,8 @@ def plot_comparison(f, model, interval=(-10, 10), nsamples=1000, return_array=Tr
     fig.canvas.draw()
     img_from_plot = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
     return img_from_plot.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+
+#Train and test functions
 
 def test(model, dataloader, lossfunc):
   '''A function for evaluating our model on test data'''  
@@ -260,25 +311,81 @@ def test(model, dataloader, lossfunc):
   
   return cumloss / len(dataloader)
 
-class MultiLayerNetwork(nn.Module):
-  def __init__(self):
-    super().__init__()    
-    self.layers = nn.Sequential(
-        nn.Linear(1, 128),
-        nn.ReLU(),
-        nn.Linear(128, 64),
-        nn.ReLU(),
-        nn.Linear(64, 32),
-        nn.ReLU(),
-        nn.Linear(32, 8),
-        nn.ReLU(),
-        nn.Linear(8, 1),
-    )
+def train(model, dataloader, lossfunc, optimizer):
 
-  def forward(self, x):
-    return self.layers(x)
+  cumloss = 0.0
+  for X, y in dataloader:
+    X = X.unsqueeze(1).float()
+    y = y.unsqueeze(1).float()
+
+    pred = model.eval(X)
+    loss = lossfunc.eval(pred, y)
+    model.zero_grad()
+    lossfunc.backward()
+    optimizer.step()
+    cumloss += loss.item() 
+  
+  return cumloss / len(dataloader)
+
+#Start
 
 #build computational graph
+model = GraphNetwork(
+ 	Linear(1, 128),
+    Sigmoid(),
+    Linear(128,64),
+    Sigmoid(),
+    Linear(64, 32),
+    Sigmoid(),
+    Linear(32,8),
+    Sigmoid(),
+    Linear(8,1),
+)
+
+#build loss function
+loss = MSE(model.last_node)
+show(loss)
+
+#build optmizer 
+optimizer = Adam(model.parameters())
+
+
+#Load dataset
+line = lambda x: np.cos(x) + 0.15*np.random.randn()
+interval = (-10, 10)
+train_nsamples = 1000
+test_nsamples = 100
+train_dataset = AlgebraicDataset(line, interval, train_nsamples)
+test_dataset = AlgebraicDataset(line, interval, test_nsamples)
+
+batch_size = 1000
+train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+test_dataloader = DataLoader(test_dataset, batch_size=test_nsamples, shuffle=True)
+
+#train 
+epochs = 1001
+
+# Let''s make a Gif of the training
+filename_output = "./sgd.gif"
+writer = imageio.get_writer(filename_output, mode='I', duration=0.3)
+loss_epochs = []
+for t in range(epochs):
+  train_loss = train(model, train_dataloader, loss, optimizer)
+  if t % 25 == 0:
+    print(f"Epoch: {t}; Train Loss: {train_loss}")
+    loss_epochs.append(train_loss)
+    #image = plot_comparison(line, model)
+    # appending to gif
+    #writer.append_data(image)
+    
+fig, ax = plt.subplots(figsize=(10, 10))
+ax.grid(True, which='both')
+ax.spines['left'].set_position('zero')
+ax.spines['right'].set_color('none')
+ax.spines['bottom'].set_position('zero')
+ax.spines['top'].set_color('none')
+ax.plot(range(len(loss_epochs)), loss_epochs, label="model (Sigmoid)", linewidth = 4.0)
+plt.legend()
 model = GraphNetwork(
  	Linear(1, 128),
     ReLU(),
@@ -290,77 +397,22 @@ model = GraphNetwork(
     ReLU(),
     Linear(8,1),
 )
-
-#build loss function
 loss = MSE(model.last_node)
-#loss.show()
-#build optmizer 
 optimizer = Adam(model.parameters())
-#Load dataset
-model2 = MultiLayerNetwork()
-lossfunc2 = nn.MSELoss()
-optimizer2 = torch.optim.SGD(model2.parameters(), lr=1e-3)
-
-line = lambda x: np.cos(x) + 0.15*np.random.randn()
-
-interval = (-10, 10)
-train_nsamples = 1000
-test_nsamples = 100
-train_dataset = AlgebraicDataset(line, interval, train_nsamples)
-test_dataset = AlgebraicDataset(line, interval, test_nsamples)
-
-train_dataloader = DataLoader(train_dataset, batch_size=train_nsamples, shuffle=True)
-test_dataloader = DataLoader(test_dataset, batch_size=test_nsamples, shuffle=True)
-
-#train 
-
-def train(model, dataloader, lossfunc, optimizer, model2, lossfunc2, optimizer2):
-
-  #model2.train()
-  cumloss = 0.0
-  for X, y in dataloader:
-    X = X.unsqueeze(1).float()
-    y = y.unsqueeze(1).float()
-
-    pred = model.eval(X)
-    #pred2 = model2(X)
-    loss = lossfunc.eval(pred, y)
-    #loss2 = lossfunc2(pred2, y)
-    #print((loss - loss2).item())
-
-    # we need to "clean" the accumulated gradients
-    #optimizer2.zero_grad()
-    model.zero_grad()
-    # computes gradients
-    lossfunc.backward()
-    #loss2.backward()
-    #check the gradient value
-    #check = model2.layers[-3].bias.grad - model.layers[-3].parents[1].grad
-    # updates parameters going in the direction that decreases the local error
-    optimizer.step()
-    #optimizer2.step()
-
-    # loss is a tensor so we use *item* to get the underlying float value
-    cumloss += loss.item() 
-  
-  return cumloss / len(dataloader)
-
-
-epochs = 1001
-
-# Let''s make a Gif of the training
-filename_output = "./line_approximation_2.gif"
-writer = imageio.get_writer(filename_output, mode='I', duration=0.3)
-
+loss_epochs = []
 for t in range(epochs):
-  train_loss = train(model, train_dataloader, loss, optimizer, model2, lossfunc2, optimizer2)
+  train_loss = train(model, train_dataloader, loss, optimizer)
   if t % 25 == 0:
     print(f"Epoch: {t}; Train Loss: {train_loss}")
-    image = plot_comparison(line, model)
-    # appending to gif
-    writer.append_data(image)
-
-test_loss = test(model, test_dataloader, loss)
+    loss_epochs.append(train_loss)
+    
+ax.plot(range(len(loss_epochs)), loss_epochs, label="model (ReLu)", linewidth = 4.0)
+plt.legend()
+plt.xlabel('epochs', fontsize=20)
+plt.ylabel('train loss', fontsize=20)
+#plot_comparison(line,model,return_array=False, epoch = 1001)
+plt.savefig('sigmoid_relu.png')
+ytest_loss = test(model, test_dataloader, loss)
 print(f"Test Loss: {test_loss}")
 writer.close()
   
