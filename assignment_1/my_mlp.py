@@ -5,6 +5,8 @@ import matplotlib.pyplot as plt
 from torch.utils.data import Dataset, DataLoader
 import torch.distributions.uniform as urand
 from torch import nn
+import numpy as np
+import imageio
 
 
 class Node:
@@ -16,6 +18,8 @@ class Node:
 		self.is_updatable = is_updatable #for update the parameters
 		self.label = label # label for graph plot
 		self.color = color # color for graph plot
+	def add_edge(self, node):
+		self.parents.append(node)
 	def eval(self):
 		raise NotImplementedError
 	def update_derivatives(self):
@@ -62,6 +66,16 @@ class Sigmoid(Node):
 		s = self.value
 		d = s * (1 - s)
 		self.parents[0].grad += d * self.grad
+class ReLU(Node):
+	def __init__(self):
+		Node.__init__(self,[],label="$\sigma",color="#C48DF3")
+	def eval(self):
+		input = self.parents[0].value
+		self.value = torch.maximum(0*input, input)
+	def update_derivatives(self):
+		self.eval()
+		s = self.value		
+		self.parents[0].grad += (s > 0).float() * self.grad
 
 class MSE(Node):
 	def __init__(self, model):
@@ -123,6 +137,25 @@ class SGD:
 	def step(self):
 		for node in self.trainable_nodes:
 			node.value += -self.learning_rate * node.grad
+class Adam:
+	def __init__(self, trainable_nodes, learning_rate = 0.001, beta_1 = 0.9, beta_2 = 0.999):
+		self.trainable_nodes = trainable_nodes
+		self.learning_rate = learning_rate
+		self.beta_1 = beta_1
+		self.beta_2 = beta_2
+		self.n = len(trainable_nodes)
+		self.s = [0] * self.n # first moment variable
+		self.r = [0] * self.n # second moment variable
+		self.epslon = 1e-6 # avoid division by zero
+	def step(self):
+		for i in range(self.n):
+			node = self.trainable_nodes[i]
+			g = node.grad
+			self.s[i] = self.beta_1 * self.s[i] + (1 - self.beta_1)*g
+			self.r[i] = self.beta_2 * self.r[i] + (1 - self.beta_2)*(g*g)
+			s_c = self.s[i] / (1 - self.beta_1)
+			r_c = self.r[i] / (1 - self.beta_2)
+			node.value += -self.learning_rate * (s_c /(torch.sqrt(r_c) + self.epslon))
 
 class GraphNetwork:
 	def __init__(self, *args):
@@ -131,10 +164,10 @@ class GraphNetwork:
 		self.last_node = args[-1]
   		#update graph adjacency list
 		for i in range(1 , n_nodes):
-			args[i].parents.append(args[i-1])
+			args[i].add_edge(args[i-1])
 		#create a X layer and a Y layer
 		self.X = Const(label="$X$", color='#FF6961')
-		self.layers[0].parents.append(self.X) # create edge to first layer
+		self.layers[0].add_edge(self.X) # create edge to first layer
 		#sort the nodes in topological order for backpropagation
 		nodes_ordered = []
 		self.topological_sort(self.last_node, nodes_ordered)
@@ -188,19 +221,58 @@ class AlgebraicDataset(Dataset):
   def __getitem__(self, idx):
     return self.data[idx]
 
+def plot_comparison(f, model, interval=(-10, 10), nsamples=1000, return_array=True):
+  fig, ax = plt.subplots(figsize=(10, 10))
+
+  ax.grid(True, which='both')
+  ax.spines['left'].set_position('zero')
+  ax.spines['right'].set_color('none')
+  ax.spines['bottom'].set_position('zero')
+  ax.spines['top'].set_color('none')
+
+  samples = np.linspace(interval[0], interval[1], nsamples)
+  X =  torch.tensor(samples).unsqueeze(1).float()
+  pred = model.eval(X)
+#   model.eval()
+#   with torch.no_grad():
+#     pred = model(X)
+
+  ax.plot(samples, list(map(f, samples)), "o", label="ground truth")
+  ax.plot(samples, pred, label="model")
+  plt.legend()
+  #plt.show()
+  # to return image as numpy array
+  if return_array:
+    fig.canvas.draw()
+    img_from_plot = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+    return img_from_plot.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+
+def test(model, dataloader, lossfunc):
+  '''A function for evaluating our model on test data'''  
+  cumloss = 0.0
+  for X, y in dataloader:
+      X = X.unsqueeze(1).float()
+      y = y.unsqueeze(1).float()
+
+      pred = model.eval(X)
+      loss = lossfunc.eval(pred, y)
+      cumloss += loss.item() 
+  
+  return cumloss / len(dataloader)
+
 class MultiLayerNetwork(nn.Module):
   def __init__(self):
     super().__init__()    
     self.layers = nn.Sequential(
         nn.Linear(1, 128),
-        nn.Sigmoid(),
-        nn.Linear(128,64),
-        nn.Sigmoid(),
+        nn.ReLU(),
+        nn.Linear(128, 64),
+        nn.ReLU(),
         nn.Linear(64, 32),
-    	nn.Sigmoid(),
-        nn.Linear(32,8),
-        nn.Sigmoid(),
-        nn.Linear(8,1),
+        nn.ReLU(),
+        nn.Linear(32, 8),
+        nn.ReLU(),
+        nn.Linear(8, 1),
     )
 
   def forward(self, x):
@@ -209,13 +281,13 @@ class MultiLayerNetwork(nn.Module):
 #build computational graph
 model = GraphNetwork(
  	Linear(1, 128),
-    Sigmoid(),
+    ReLU(),
     Linear(128,64),
-    Sigmoid(),
+    ReLU(),
     Linear(64, 32),
-    Sigmoid(),
+    ReLU(),
     Linear(32,8),
-    Sigmoid(),
+    ReLU(),
     Linear(8,1),
 )
 
@@ -223,13 +295,13 @@ model = GraphNetwork(
 loss = MSE(model.last_node)
 #loss.show()
 #build optmizer 
-optimizer = SGD(model.parameters(), learning_rate=1e-3)
+optimizer = Adam(model.parameters())
 #Load dataset
 model2 = MultiLayerNetwork()
 lossfunc2 = nn.MSELoss()
 optimizer2 = torch.optim.SGD(model2.parameters(), lr=1e-3)
 
-line = lambda x: 2*x + 3
+line = lambda x: np.cos(x) + 0.15*np.random.randn()
 
 interval = (-10, 10)
 train_nsamples = 1000
@@ -244,27 +316,29 @@ test_dataloader = DataLoader(test_dataset, batch_size=test_nsamples, shuffle=Tru
 
 def train(model, dataloader, lossfunc, optimizer, model2, lossfunc2, optimizer2):
 
+  #model2.train()
   cumloss = 0.0
   for X, y in dataloader:
     X = X.unsqueeze(1).float()
     y = y.unsqueeze(1).float()
 
     pred = model.eval(X)
-    pred2 = model2.forward(X)
+    #pred2 = model2(X)
     loss = lossfunc.eval(pred, y)
-    loss2 = lossfunc2(pred2, y)
+    #loss2 = lossfunc2(pred2, y)
+    #print((loss - loss2).item())
 
     # we need to "clean" the accumulated gradients
-    optimizer2.zero_grad()
+    #optimizer2.zero_grad()
     model.zero_grad()
     # computes gradients
     lossfunc.backward()
-    loss2.backward()
+    #loss2.backward()
     #check the gradient value
-    check = model2.layers[-3].bias.grad - model.layers[-3].parents[1].grad
+    #check = model2.layers[-3].bias.grad - model.layers[-3].parents[1].grad
     # updates parameters going in the direction that decreases the local error
     optimizer.step()
-    optimizer2.step()
+    #optimizer2.step()
 
     # loss is a tensor so we use *item* to get the underlying float value
     cumloss += loss.item() 
@@ -275,7 +349,18 @@ def train(model, dataloader, lossfunc, optimizer, model2, lossfunc2, optimizer2)
 epochs = 1001
 
 # Let''s make a Gif of the training
-filename_output = "./line_approximation.gif"
+filename_output = "./line_approximation_2.gif"
+writer = imageio.get_writer(filename_output, mode='I', duration=0.3)
 
 for t in range(epochs):
   train_loss = train(model, train_dataloader, loss, optimizer, model2, lossfunc2, optimizer2)
+  if t % 25 == 0:
+    print(f"Epoch: {t}; Train Loss: {train_loss}")
+    image = plot_comparison(line, model)
+    # appending to gif
+    writer.append_data(image)
+
+test_loss = test(model, test_dataloader, loss)
+print(f"Test Loss: {test_loss}")
+writer.close()
+  
