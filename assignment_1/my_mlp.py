@@ -7,7 +7,6 @@ import torch.distributions.uniform as urand
 import numpy as np
 import imageio
 
-plt.ion()
 class Node:
 	"""
 		Classe nó para acomodar as opertações do grafo computacional
@@ -287,7 +286,7 @@ def plot_comparison(f, model, interval=(-10, 10), nsamples=300, return_array=Tru
   pred = model.eval(X)
 
   ax.plot(samples, list(map(f, samples)), "o", label="ground truth")
-  ax.plot(samples, pred, label="model (Sigmoid)", linewidth = 4.0)
+  ax.plot(samples, pred, label="model", linewidth = 4.0)
   plt.legend()
   #plt.show()
   # to return image as numpy array
@@ -329,90 +328,61 @@ def train(model, dataloader, lossfunc, optimizer):
 
 #Start
 
-#build computational graph
-model = GraphNetwork(
- 	Linear(1, 128),
-    Sigmoid(),
-    Linear(128,64),
-    Sigmoid(),
-    Linear(64, 32),
-    Sigmoid(),
-    Linear(32,8),
-    Sigmoid(),
-    Linear(8,1),
-)
+try: #If running in colab 
+    import google.colab
+    IN_COLAB = True 
+except:
+    IN_COLAB = False
 
-#build loss function
-loss = MSE(model.last_node)
-show(loss)
+if not IN_COLAB:
+    #build computational graph
+	model = GraphNetwork(
+	 	Linear(1, 128),
+	    ReLU(),
+	    Linear(128,64),
+	    ReLU(),
+	    Linear(64, 32),
+	    ReLU(),
+	    Linear(32,8),
+	    ReLU(),
+	    Linear(8,1),
+	)
 
-#build optmizer 
-optimizer = Adam(model.parameters())
+	#build loss function
+	loss = MSE(model.last_node)
+	show(loss)
+
+	#build optmizer 
+	optimizer = Adam(model.parameters())
 
 
-#Load dataset
-line = lambda x: np.cos(x) + 0.15*np.random.randn()
-interval = (-10, 10)
-train_nsamples = 1000
-test_nsamples = 100
-train_dataset = AlgebraicDataset(line, interval, train_nsamples)
-test_dataset = AlgebraicDataset(line, interval, test_nsamples)
+	#Load dataset
+	line = lambda x: np.cos(x) + 0.15*np.random.randn()
+	interval = (-10, 10)
+	train_nsamples = 1000
+	test_nsamples = 100
+	train_dataset = AlgebraicDataset(line, interval, train_nsamples)
+	test_dataset = AlgebraicDataset(line, interval, test_nsamples)
 
-batch_size = 1000
-train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-test_dataloader = DataLoader(test_dataset, batch_size=test_nsamples, shuffle=True)
+	batch_size = 16
+	train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+	test_dataloader = DataLoader(test_dataset, batch_size=test_nsamples, shuffle=True)
 
-#train 
-epochs = 1001
+	#train 
+	epochs = 1001
 
-# Let''s make a Gif of the training
-filename_output = "./sgd.gif"
-writer = imageio.get_writer(filename_output, mode='I', duration=0.3)
-loss_epochs = []
-for t in range(epochs):
-  train_loss = train(model, train_dataloader, loss, optimizer)
-  if t % 25 == 0:
-    print(f"Epoch: {t}; Train Loss: {train_loss}")
-    loss_epochs.append(train_loss)
-    #image = plot_comparison(line, model)
-    # appending to gif
-    #writer.append_data(image)
-    
-fig, ax = plt.subplots(figsize=(10, 10))
-ax.grid(True, which='both')
-ax.spines['left'].set_position('zero')
-ax.spines['right'].set_color('none')
-ax.spines['bottom'].set_position('zero')
-ax.spines['top'].set_color('none')
-ax.plot(range(len(loss_epochs)), loss_epochs, label="model (Sigmoid)", linewidth = 4.0)
-plt.legend()
-model = GraphNetwork(
- 	Linear(1, 128),
-    ReLU(),
-    Linear(128,64),
-    ReLU(),
-    Linear(64, 32),
-    ReLU(),
-    Linear(32,8),
-    ReLU(),
-    Linear(8,1),
-)
-loss = MSE(model.last_node)
-optimizer = Adam(model.parameters())
-loss_epochs = []
-for t in range(epochs):
-  train_loss = train(model, train_dataloader, loss, optimizer)
-  if t % 25 == 0:
-    print(f"Epoch: {t}; Train Loss: {train_loss}")
-    loss_epochs.append(train_loss)
-    
-ax.plot(range(len(loss_epochs)), loss_epochs, label="model (ReLu)", linewidth = 4.0)
-plt.legend()
-plt.xlabel('epochs', fontsize=20)
-plt.ylabel('train loss', fontsize=20)
-#plot_comparison(line,model,return_array=False, epoch = 1001)
-plt.savefig('sigmoid_relu.png')
-ytest_loss = test(model, test_dataloader, loss)
-print(f"Test Loss: {test_loss}")
-writer.close()
-  
+	# Let''s make a Gif of the training
+	filename_output = "./my_mlp.gif"
+	writer = imageio.get_writer(filename_output, mode='I', duration=0.3)
+	for t in range(epochs):
+		train_loss = train(model, train_dataloader, loss, optimizer)
+		if t % 25 == 0:
+			print(f"Epoch: {t}; Train Loss: {train_loss}")
+			image = plot_comparison(line, model)
+			# appending to gif
+			writer.append_data(image)
+
+	test_loss = test(model, test_dataloader, loss)
+	print(f"Test Loss: {test_loss}")
+	writer.close()
+	
