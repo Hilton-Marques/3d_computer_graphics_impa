@@ -2,6 +2,10 @@
 import os
 import sys
 import torch
+from my_opt import *
+import imageio
+
+
 need_pytorch3d=False
 try:
     import pytorch3d
@@ -26,7 +30,6 @@ if need_pytorch3d:
 import matplotlib.pyplot as plt
 import torch
 import pytorch3d.transforms as t
-from torch.optim.optimizer import Optimizer, required
 
 from pytorch3d.transforms.so3 import (
     so3_exponential_map,
@@ -124,7 +127,10 @@ N = R_absolute_gt.shape[0]
 ##############################################################################
 # Code and explanation for 1.1
 ##############################################################################
-
+first_rotation = R_absolute_gt[0]
+first_translation = T_absolute_gt[0]
+print(first_rotation)
+print(first_translation)
 """## 2. Define optimization functions
 
 ### Relative cameras and camera distance
@@ -143,18 +149,19 @@ def calc_camera_distance(cam_1, cam_2):
     between the translation vectors.
     """
     # rotation distance
-    # trans_x = cam_1.get_world_to_view_transform()
-    # trans_exact = cam_2.get_world_to_view_transform()
-    # e = trans_x.compose(trans_exact.inverse())
-    # e_log = e.get_se3_log()
-    # err = torch.sum(torch.sum(e_log * e_log, dim=-1))
+    
+    trans_x = cam_1.get_world_to_view_transform()
+    trans_exact = cam_2.get_world_to_view_transform()
+    e = trans_x.compose(trans_exact.inverse())
+    e_log = e.get_se3_log()
+    err = torch.sum(torch.sum(e_log * e_log, dim=-1))
     
     
-    R_distance = (1.-so3_relative_angle(cam_1.R, cam_2.R, cos_angle=True)).mean()
-    #translation distance
-    T_distance = ((cam_1.T - cam_2.T)**2).sum(1).mean()
-    # the final distance is the sum
-    err = R_distance + T_distance
+    # R_distance = (1.-so3_relative_angle(cam_1.R, cam_2.R, cos_angle=True)).mean()
+    # #translation distance
+    # T_distance = ((cam_1.T - cam_2.T)**2).sum(1).mean()
+    # # the final distance is the sum
+    # err = R_distance + T_distance
     return err
 
 def get_relative_camera(cams, edges):
@@ -175,8 +182,8 @@ def get_relative_camera(cams, edges):
     
     # compose the relative transformation as g_i^{-1} g_j
     a = trans_i.inverse()
-    #trans_rel = trans_j.compose(trans_i.inverse())
-    trans_rel = trans_i.inverse().compose(trans_j)
+    trans_rel = trans_j.compose(trans_i.inverse())
+    #trans_rel = trans_i.inverse().compose(trans_j)
     
     
     
@@ -233,6 +240,9 @@ As mentioned earlier, `log_R_absolute` is the axis angle representation of the r
 
 """
 
+import numpy as np
+
+
 # initialize the absolute log-rotations/translations with random entries
 log_R_absolute_init = torch.randn(N, 3, dtype=torch.float32, device=device)
 T_absolute_init = torch.randn(N, 3, dtype=torch.float32, device=device)
@@ -258,12 +268,14 @@ camera_mask[0] = 0.
 v = torch.cat((T_absolute, log_R_absolute), dim = 1).clone().detach()
 v.requires_grad = True
 #optimizer = torch.optim.SGD([log_R_absolute, T_absolute], lr=.1, momentum=0.9)
-optimizer = torch.optim.SGD([v], lr=.1, momentum=0.9)
-
+#optimizer = torch.optim.SGD([v], lr=.1, momentum=0.9)
+optimizer = SE3Opt([v], lr=0.001)
 # run the optimization
 n_iter = 500  # fix the number of iterations
+gif_path = "./teste.gif"
 loss = [0.0] * n_iter
 for it in range(n_iter):
+    #print(it)
     # re-init the optimizer gradients
     optimizer.zero_grad()
 
@@ -280,7 +292,7 @@ for it in range(n_iter):
         T = T_absolute,
         device = device,
     )
-    if it == -1:
+    if it == 0:
         #first_pose = cameras_absolute.get_world_to_view_transform().get_matrix().permute(1,2,0)
         first_pose = concatenate_rotation_translation(R_absolute , T_absolute * camera_mask)
         scipy.io.savemat("first_poses.mat", {"first_pose" : first_pose.detach().numpy()})
@@ -303,16 +315,23 @@ for it in range(n_iter):
     #apply modifications on SE3
     #x = torch.cat((T_absolute, log_R_absolute), dim = 1)
     #x = cat_in_place(T_absolute, log_R_absolute)
-    Jrinv = getJacobianRightInv(v)
-    dx = -0.1 * v.grad.unsqueeze(2).double()
-    v += torch.bmm(Jrinv ,dx).squeeze(2)
-    #optimizer.step()
+    #Jrinv = getJacobianRightInv(v)
+    #dx = -0.1 * v.grad.unsqueeze(2).double()
+    #v += torch.bmm(Jrinv ,dx).squeeze(2)
+    optimizer.step()
+    
+    if gif_path:
+        writer = imageio.get_writer(gif_path, mode='I', duration=0.3)
 
     # plot and print status message
-    if it % 200==0 or it==n_iter-1:
+    if it % 50==0 or it==n_iter-1:
         status = 'iteration=%3d; camera_distance=%1.3e' % (it, camera_distance)
-        #plot_camera_scene(cameras_absolute, cameras_absolute_gt, status)
+        fig = plot_camera_scene(cameras_absolute, cameras_absolute_gt, status)
+        data = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+        data = data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+        writer.append_data(data)
 
+writer.close()        
 fig, ax = plt.subplots(figsize=(10, 10))
 ax.grid(True, which='both')
 ax.spines['left'].set_position('zero')
